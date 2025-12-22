@@ -1,5 +1,6 @@
+
 import React, { useRef, useEffect } from 'react';
-import { ParkingSpot, SpotStatus, SpotType, Vehicle } from '../types';
+import { ParkingSpot, SpotStatus, Vehicle } from '../types';
 import { Image as ImageIcon } from 'lucide-react';
 
 interface ParkingMapProps {
@@ -8,21 +9,20 @@ interface ParkingMapProps {
   spots: ParkingSpot[];
   vehicles: Vehicle[];
   assignedSpotId: string | null;
-  isNavigating?: boolean; // Controls visibility of non-target elements
-  showHeatmap?: boolean;
-  onActivityDetected?: (zoneIndex: number) => void;
   onImageAnalysisComplete?: (spotIds: string[]) => void;
-  showDebugOverlay?: boolean; 
+  showDebugOverlay?: boolean;
+  // Added missing props to fix TS errors in App.tsx
+  isNavigating?: boolean;
+  onActivityDetected?: (zoneIndex: number) => void;
+  showHeatmap?: boolean;
 }
 
-// Clean Modern Light Palette
 const COLORS = {
-  bg: '#cbd5e1',        // Slate 300 (Concrete / Map Ground)
-  panel: '#ffffff',     // White
-  accent: '#2563eb',    // Blue 600
-  highlight: '#e2e8f0', // Slate 200
-  text: '#0f172a',      // Slate 900
-  textLight: '#64748b'
+  asphalt: '#1e293b',    
+  green: '#10b981',
+  red: '#ef4444',
+  accent: '#2563eb',
+  indicator: '#fbbf24'
 };
 
 const ParkingMap: React.FC<ParkingMapProps> = ({
@@ -31,346 +31,264 @@ const ParkingMap: React.FC<ParkingMapProps> = ({
   spots,
   vehicles,
   assignedSpotId,
-  isNavigating = false,
-  showHeatmap = false,
-  onActivityDetected,
   onImageAnalysisComplete,
-  showDebugOverlay = false
+  showDebugOverlay = false,
+  // Destructure added props to maintain clean prop handling and fix intrinsic attributes errors
+  isNavigating,
+  onActivityDetected,
+  showHeatmap
 }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const analysisCanvasRef = useRef<HTMLCanvasElement>(null);
-  
-  // Use Refs for animation values
-  const scanLineY = useRef(0);
-  const pulseFrame = useRef(0);
+  const pulseRef = useRef(0);
 
-  // Auto-play video
+  // --- ROBUST UNIVERSAL DETECTION ENGINE ---
   useEffect(() => {
-    if (mediaType === 'video' && videoRef.current && mediaSrc) {
-      videoRef.current.load();
-      videoRef.current.play().catch(e => console.log("Autoplay prevented:", e));
-    }
-  }, [mediaSrc, mediaType]);
-
-  // --- Real Image Analysis (Deep Structure + Color Logic) ---
-  useEffect(() => {
-    if (mediaType === 'image' && mediaSrc && onImageAnalysisComplete && imageRef.current && spots.length > 0) {
+    // Every time mediaSrc changes, we must perform a fresh analysis
+    if (mediaSrc && onImageAnalysisComplete && imageRef.current && spots.length > 0) {
       const img = imageRef.current;
-      
+
       const analyze = () => {
         const anaCanvas = analysisCanvasRef.current;
         if (!anaCanvas) return;
         const ctx = anaCanvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) return;
 
-        // Set canvas to match image dimensions for accurate sampling
-        anaCanvas.width = img.width;
-        anaCanvas.height = img.height;
+        // Ensure we analyze at the original image's native resolution for maximum accuracy
+        anaCanvas.width = img.naturalWidth || img.width;
+        anaCanvas.height = img.naturalHeight || img.height;
+        ctx.clearRect(0, 0, anaCanvas.width, anaCanvas.height);
         ctx.drawImage(img, 0, 0);
 
         const occupiedSpots: string[] = [];
 
         spots.forEach(spot => {
-          // Convert percentage coordinates to pixel coordinates
-          const x = (spot.x / 100) * img.width;
-          const y = (spot.y / 100) * img.height;
-          // Sample box size
-          const w_px = Math.floor((50 / 800) * img.width); 
-          const h_px = Math.floor((80 / 600) * img.height);
+          // Calculate coordinates relative to the source image dimensions
+          const x = (spot.x / 100) * anaCanvas.width;
+          const y = (spot.y / 100) * anaCanvas.height;
+          
+          // Dynamic box sizing: optimized for a standard vehicle footprint (slightly smaller than the paint box)
+          const w_px = Math.floor((48 / 800) * anaCanvas.width); 
+          const h_px = Math.floor((80 / 600) * anaCanvas.height);
 
           try {
             const imageData = ctx.getImageData(x - w_px/2, y - h_px/2, w_px, h_px);
             const data = imageData.data;
-            const len = data.length;
+            const pixelCount = data.length / 4;
             
-            let deepDarkPixels = 0; // Tires, Windshields, Shadows (Lum < 35)
-            let highSatPixels = 0;  // Colorful car paint (Sat > 0.20)
-            const count = len / 4;
+            let totalIntensity = 0;
+            let totalChroma = 0; // Measurement of color vibrancy (max(RGB) - min(RGB))
+            let maxChroma = 0;
+            let darkPixels = 0;
+            let brightPixels = 0;
 
-            for (let i = 0; i < len; i += 4) {
-              const r = data[i];
-              const g = data[i+1];
-              const b = data[i+2];
-
-              // Luminance
+            // Step 1: Statistical Pixel Analysis
+            for (let i = 0; i < data.length; i += 4) {
+              const r = data[i], g = data[i+1], b = data[i+2];
               const lum = 0.299*r + 0.587*g + 0.114*b;
-
-              // Saturation
-              const max = Math.max(r, g, b);
-              const min = Math.min(r, g, b);
-              let sat = 0;
-              if (max > 0) sat = (max - min) / max;
-
-              // --- CRITICAL REFINEMENT ---
+              const chroma = Math.max(r,g,b) - Math.min(r,g,b);
               
-              // 1. Deep Dark Detection (The 3D Object Anchor)
-              // Asphalt/Concrete is usually gray (> 60-80 Lum). 
-              // Tires/Windshields/Undercarriage are BLACK (< 35 Lum).
-              // Painted 'P' is WHITE (> 200 Lum).
-              if (lum < 35) {
-                deepDarkPixels++;
-              }
+              totalIntensity += lum;
+              totalChroma += chroma;
+              if (chroma > maxChroma) maxChroma = chroma;
+              if (lum < 55) darkPixels++; // Potential shadow or dark paint
+              if (lum > 200) brightPixels++; // Potential highlight or white paint
+            }
+            
+            const avgIntensity = totalIntensity / pixelCount;
+            const avgChroma = totalChroma / pixelCount;
 
-              // 2. Color Detection
-              // Cars often have color. Road and White Paint do not.
-              if (sat > 0.20) {
-                highSatPixels++;
-              }
+            // Step 2: Texture & Edge Analysis (Variance)
+            let varianceSum = 0;
+            for (let i = 0; i < data.length; i += 4) {
+              const lum = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+              varianceSum += Math.pow(lum - avgIntensity, 2);
+            }
+            const stdDev = Math.sqrt(varianceSum / pixelCount);
+
+            /**
+             * UNIVERSAL RECOGNITION HEURISTICS:
+             * 
+             * 1. THE VIBRANCY SIGNAL (Graphical Cars): 
+             *    Graphical cars (like cartoons) have strong, saturated colors. 
+             *    Road paint ('P', Lines) is ALWAYS grayscale (very low Chroma).
+             * 
+             * 2. THE TEXTURE SIGNAL (Real Photos):
+             *    Cars have complex shapes (windshields, grilles, lights).
+             *    Paint symbols are flat and uniform (low stdDev).
+             * 
+             * 3. THE SHADOW SIGNAL:
+             *    Vehicles cast ambient occlusion shadows.
+             */
+            
+            const hasVibrantColor = avgChroma > 12 || maxChroma > 45;
+            const hasComplexTexture = stdDev > 9.5;
+            const hasSignificantShadows = (darkPixels / pixelCount) > 0.08;
+            
+            // Immunity check for "P" symbols and road markings:
+            // Symbols are bright, flat (low variance), and colorless.
+            const isRoadPaint = avgIntensity > 165 && stdDev < 13 && avgChroma < 10;
+
+            // Decision Matrix:
+            // - If it's vibrant and textured, it's definitely a car.
+            // - If it's dark and textured, it's a dark car.
+            // - If it's vibrant but flat, it's likely a cartoon car.
+            let occupied = false;
+
+            if (!isRoadPaint) {
+              if (hasVibrantColor && hasComplexTexture) occupied = true;
+              else if (hasVibrantColor && avgIntensity < 220) occupied = true; // Saturated objects
+              else if (hasComplexTexture && hasSignificantShadows) occupied = true; // Real car shadows
+              else if (stdDev > 22) occupied = true; // Extremely busy area
             }
 
-            const darkRatio = deepDarkPixels / count;
-            const satRatio = highSatPixels / count;
-
-            // --- DECISION LOGIC ---
-            
-            // It is occupied IF:
-            // A) It is colorful (e.g. Red, Blue, Green car)
-            //    -> satRatio > 0.10 (10% of pixels are colorful)
-            // B) It has deep dark structure (e.g. White/Black/Silver car with tires/windows)
-            //    -> darkRatio > 0.015 (1.5% of pixels are pitch black)
-            
-            // A painted 'P' is White on Grey. 
-            // It has Low Saturation (~0) AND Low Dark Pixels (~0).
-            // It will FAIL both checks and correctly show as AVAILABLE.
-
-            const isOccupied = satRatio > 0.10 || darkRatio > 0.015;
-
-            if (isOccupied) {
-               occupiedSpots.push(spot.id);
+            if (occupied) {
+              occupiedSpots.push(spot.id);
             }
-
           } catch (e) {
-            console.warn("Analysis failed for spot", spot.id);
+            console.error("Analysis slice failed", e);
           }
         });
 
         onImageAnalysisComplete(occupiedSpots);
       };
 
+      // Trigger analysis only when image is fully decoded
       if (img.complete) {
         analyze();
       } else {
         img.onload = analyze;
       }
     }
-  }, [mediaSrc, mediaType, spots.length, onImageAnalysisComplete]);
+  }, [mediaSrc, spots.length, onImageAnalysisComplete]); // mediaSrc is the key trigger
 
-  // --- Computer Vision Simulation (Video) ---
-  useEffect(() => {
-    if (mediaType !== 'video' || !onActivityDetected) return;
-    const interval = setInterval(() => {
-       // Simple simulation for video mode
-       if (Math.random() > 0.95) onActivityDetected(0);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [mediaSrc, mediaType, onActivityDetected]);
-
-  // --- Rendering Loop ---
+  // --- REAL-TIME RENDER LOOP ---
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let animationFrameId: number;
-
+    let frame: number;
     const render = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      pulseRef.current = (pulseRef.current + 0.05) % (Math.PI * 2);
 
-      // Draw Background Image 
-      if (mediaType === 'image' && imageRef.current && mediaSrc) {
+      // Layer 1: Background Image/Asphalt
+      if (mediaSrc && imageRef.current) {
         const img = imageRef.current;
         const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
-        const x = (canvas.width / 2) - (img.width / 2) * scale;
-        const y = (canvas.height / 2) - (img.height / 2) * scale;
-        ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+        const ox = (canvas.width - img.width * scale) / 2;
+        const oy = (canvas.height - img.height * scale) / 2;
+        ctx.drawImage(img, ox, oy, img.width * scale, img.height * scale);
       } else {
-         ctx.fillStyle = COLORS.bg;
-         ctx.fillRect(0,0, canvas.width, canvas.height);
-      }
-
-      // Heatmap Overlay
-      if (showHeatmap) {
-        const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-        gradient.addColorStop(0, 'rgba(255, 0, 0, 0.1)');
-        gradient.addColorStop(0.5, 'rgba(255, 255, 0, 0.05)');
-        gradient.addColorStop(1, 'rgba(0, 255, 0, 0.1)');
-        ctx.fillStyle = gradient;
+        ctx.fillStyle = COLORS.asphalt;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+        for(let i=0; i<canvas.width; i+=40) {
+          ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke();
+        }
       }
 
-      pulseFrame.current = (pulseFrame.current + 0.1) % (Math.PI * 2);
-
-      // Draw Spots
+      // Layer 2: Parking Spots
       spots.forEach(spot => {
         const x = (spot.x / 100) * canvas.width;
         const y = (spot.y / 100) * canvas.height;
-        const w = 60;
-        const h = 100;
+        const w = 54, h = 88;
 
-        let color = '#10b981'; // Green
-        if (spot.status === SpotStatus.OCCUPIED) color = '#ef4444'; // Red
-        
-        if (spot.id === assignedSpotId) color = COLORS.accent; // Blue
-        if (spot.status === SpotStatus.AVAILABLE && (spot.type === SpotType.HANDICAP || spot.type === SpotType.EV)) {
-            color = '#0ea5e9';
-        }
+        let color = COLORS.green;
+        if (spot.status === SpotStatus.OCCUPIED) color = COLORS.red;
+        if (spot.id === assignedSpotId) color = COLORS.accent;
 
-        // --- Spot Rendering ---
-        
-        // 1. Reserved Glow (High visibility for target)
+        // Pulse effect for assigned spot
         if (spot.id === assignedSpotId) {
           ctx.shadowColor = COLORS.accent;
-          ctx.shadowBlur = 40;
+          ctx.shadowBlur = 10 + Math.sin(pulseRef.current) * 8;
           ctx.strokeStyle = COLORS.accent;
-          ctx.lineWidth = 5;
-          ctx.beginPath();
-          ctx.roundRect(x - w/2 - 5, y - h/2 - 5, w + 10, h + 10, 8);
-          ctx.stroke();
+          ctx.lineWidth = 4;
+          ctx.strokeRect(x - w/2 - 2, y - h/2 - 2, w + 4, h + 4);
           ctx.shadowBlur = 0;
         }
 
-        // 2. The Spot Box
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
-        ctx.fillStyle = spot.status === SpotStatus.OCCUPIED ? color + '60' : color + '30'; 
-        
-        // Draw Box
+        ctx.fillStyle = color + '15';
         ctx.beginPath();
-        ctx.roundRect(x - w/2, y - h/2, w, h, 8);
+        ctx.roundRect(x - w/2, y - h/2, w, h, 6);
         ctx.stroke();
         ctx.fill();
-        
+
         // Label
-        if (showDebugOverlay || !isNavigating || spot.id === assignedSpotId) {
-          ctx.fillStyle = COLORS.panel;
-          ctx.font = 'bold 14px Inter';
-          ctx.textAlign = 'center';
-          ctx.shadowColor = 'rgba(0,0,0,0.5)';
-          ctx.shadowBlur = 4;
-          ctx.fillText(spot.id, x, y - 5);
-          ctx.shadowBlur = 0;
-          
-          if (showDebugOverlay) {
-             ctx.font = '10px monospace';
-             ctx.fillStyle = 'white';
-             ctx.fillText(spot.status === SpotStatus.OCCUPIED ? 'OCC' : 'OPEN', x, y + 15);
-          }
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.beginPath();
+        ctx.roundRect(x - 13, y - 8, 26, 16, 3);
+        ctx.fill();
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 9px Inter';
+        ctx.textAlign = 'center';
+        ctx.fillText(spot.id, x, y + 4);
+
+        if (showDebugOverlay && spot.status === SpotStatus.OCCUPIED) {
+          ctx.fillStyle = color;
+          ctx.font = 'bold 7px monospace';
+          ctx.fillText('DETECTED', x, y + 20);
         }
       });
 
-      // Draw Path Line to Target (DASHED-DOTTED LINE)
-      vehicles.forEach(vehicle => {
-        if (vehicle.type === 'user' && vehicle.targetSpotId && vehicle.state === 'driving') {
-           const target = spots.find(s => s.id === vehicle.targetSpotId);
-           if (target) {
-              const vx = (vehicle.location.x / 100) * canvas.width;
-              const vy = (vehicle.location.y / 100) * canvas.height;
-              const tx = (target.x / 100) * canvas.width;
-              const ty = (target.y / 100) * canvas.height;
-
-              ctx.beginPath();
-              
-              // DASHED DOTTED PATTERN: [Dash, Space, Dot, Space]
-              // Made prominent for "Directions" focus
-              ctx.setLineDash([20, 10, 4, 10]); 
-              ctx.lineDashOffset = -pulseFrame.current * 15; // Fast animation
-              
-              ctx.moveTo(vx, vy);
-              ctx.lineTo(tx, vy); // Horizontal
-              ctx.lineTo(tx, ty); // Vertical
-              
-              ctx.strokeStyle = COLORS.accent;
-              ctx.lineWidth = 6; // Thicker line
-              ctx.stroke();
-              
-              // Arrow Head
-              ctx.setLineDash([]);
-              const arrowSize = 12;
-              ctx.fillStyle = COLORS.accent;
-              ctx.beginPath();
-              if (ty > vy) {
-                  ctx.moveTo(tx, ty + arrowSize);
-                  ctx.lineTo(tx - arrowSize, ty - arrowSize);
-                  ctx.lineTo(tx + arrowSize, ty - arrowSize);
-              } else {
-                  ctx.moveTo(tx, ty - arrowSize);
-                  ctx.lineTo(tx - arrowSize, ty + arrowSize);
-                  ctx.lineTo(tx + arrowSize, ty + arrowSize);
-              }
-              ctx.fill();
-           }
-        }
-      });
-
-      // Draw Vehicles
+      // Layer 3: Dynamic User Vehicle
       vehicles.forEach(vehicle => {
         const vx = (vehicle.location.x / 100) * canvas.width;
         const vy = (vehicle.location.y / 100) * canvas.height;
-
         ctx.save();
         ctx.translate(vx, vy);
         ctx.rotate((vehicle.rotation * Math.PI) / 180);
-
-        const cWidth = 48;
-        const cHeight = 26;
         
-        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowColor = 'rgba(0,0,0,0.4)';
         ctx.shadowBlur = 12;
         ctx.fillStyle = vehicle.color;
         ctx.beginPath();
-        ctx.roundRect(-cWidth/2, -cHeight/2, cWidth, cHeight, 6);
+        ctx.roundRect(-22, -12, 44, 24, 4);
         ctx.fill();
-
-        ctx.fillStyle = '#0f172a'; 
-        ctx.fillRect(-2, -cHeight/2 + 2, 12, cHeight - 4);
         
-        ctx.fillStyle = '#fef08a';
-        ctx.shadowColor = '#fef08a'; ctx.shadowBlur = 8;
-        ctx.fillRect(cWidth/2 - 2, -cHeight/2 + 2, 3, 5);
-        ctx.fillRect(cWidth/2 - 2, cHeight/2 - 7, 3, 5);
-
+        // Windshield highlight
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(8, -9, 4, 18);
         ctx.restore();
       });
 
-      // Scan Line
-      if (mediaType === 'video' && mediaSrc) {
-        scanLineY.current = (scanLineY.current + 2) % canvas.height;
-        ctx.beginPath();
-        ctx.moveTo(0, scanLineY.current);
-        ctx.lineTo(canvas.width, scanLineY.current);
-        ctx.strokeStyle = `${COLORS.accent}66`;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-
-      animationFrameId = requestAnimationFrame(render);
+      frame = requestAnimationFrame(render);
     };
-
     render();
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [spots, vehicles, assignedSpotId, showHeatmap, mediaSrc, mediaType, showDebugOverlay, isNavigating]);
+    return () => cancelAnimationFrame(frame);
+  }, [spots, vehicles, assignedSpotId, mediaSrc, showDebugOverlay]);
 
   return (
-    <div style={{ backgroundColor: COLORS.bg, borderColor: COLORS.highlight }} className="relative w-full h-full rounded-xl overflow-hidden shadow-2xl border group">
-      {mediaType === 'video' && mediaSrc && (
-        <video ref={videoRef} src={mediaSrc} className="absolute inset-0 w-full h-full object-cover opacity-50" muted loop playsInline crossOrigin="anonymous" />
-      )}
-      <img ref={imageRef} src={mediaSrc || ''} className="hidden" alt="Ref" crossOrigin="anonymous" />
+    <div className="w-full h-full bg-slate-800 flex items-center justify-center relative overflow-hidden">
+      {/* Hidden elements for processing */}
+      <img 
+        ref={imageRef} 
+        src={mediaSrc || ''} 
+        className="hidden" 
+        alt="Source" 
+        crossOrigin="anonymous" 
+      />
+      <canvas ref={analysisCanvasRef} className="hidden" />
       
+      {/* Visible display canvas */}
+      <canvas 
+        ref={canvasRef} 
+        width={800} 
+        height={600} 
+        className="w-full h-full object-contain" 
+      />
+
       {!mediaSrc && (
-        <div style={{ backgroundColor: COLORS.panel }} className="absolute inset-0 flex items-center justify-center">
-           <div className="text-center">
-             <ImageIcon style={{ color: COLORS.highlight }} className="w-12 h-12 mx-auto mb-2 opacity-50" />
-             <p style={{ color: COLORS.text }} className="font-semibold">Waiting for Input</p>
-             <p style={{ color: COLORS.textLight }} className="text-xs">Upload Site Image via Admin Panel</p>
-           </div>
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 pointer-events-none">
+          <ImageIcon className="w-16 h-16 opacity-10 mb-2" />
+          <p className="text-xs font-bold uppercase tracking-widest opacity-20">Idle Map Engine</p>
         </div>
       )}
-      <canvas ref={analysisCanvasRef} className="hidden" />
-      <canvas ref={canvasRef} width={800} height={600} className="absolute inset-0 w-full h-full z-10" />
     </div>
   );
 };

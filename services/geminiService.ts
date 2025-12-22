@@ -1,7 +1,8 @@
+
 import { GoogleGenAI, Modality } from "@google/genai";
 import { ParkingSpot, Coordinates } from "../types";
 
-// Initialize Gemini Client
+// Initialize Gemini Client using environment variable API_KEY
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // --- Text-to-Speech (TTS) ---
@@ -31,7 +32,7 @@ export const generateSpeech = async (text: string): Promise<AudioBuffer | null> 
     const audioBuffer = await decodeAudioData(
       decode(base64Audio),
       audioContext,
-      24000 // Sample rate for Gemini TTS
+      24000 // Standard sample rate for raw PCM audio from Gemini TTS
     );
     return audioBuffer;
   } catch (error) {
@@ -76,10 +77,12 @@ export const getNavigationInstruction = async (
   `;
 
   try {
+    // Update to gemini-3-flash-preview for Basic Text Tasks (e.g., simple Q&A)
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
     });
+    // Accessing .text as a property as per guidelines
     return response.text?.trim() || "Proceed to the highlighted spot.";
   } catch (e) {
     console.error(e);
@@ -98,10 +101,12 @@ export const getAdminInsights = async (stats: any, logs: any[]): Promise<string>
     Provide a 2-sentence executive summary for the parking administrator.
   `;
   try {
+    // Update to gemini-3-flash-preview for summarization tasks
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
     });
+    // Accessing .text as a property as per guidelines
     return response.text?.trim() || "Data analysis unavailable.";
   } catch (e) {
     return "System operating normally.";
@@ -121,13 +126,16 @@ function decode(base64: string) {
   return bytes;
 }
 
+/**
+ * Decodes raw PCM audio data returned by the Gemini API.
+ */
 async function decodeAudioData(
   data: Uint8Array,
   ctx: AudioContext,
   sampleRate: number = 24000,
   numChannels: number = 1
 ): Promise<AudioBuffer> {
-  // Ensure the buffer length is even for 16-bit array
+  // Ensure the buffer length is even for 16-bit array conversion
   if (data.byteLength % 2 !== 0) {
      const newData = new Uint8Array(data.byteLength + 1);
      newData.set(data);
@@ -142,7 +150,7 @@ async function decodeAudioData(
   for (let channel = 0; channel < numChannels; channel++) {
     const channelData = buffer.getChannelData(channel);
     for (let i = 0; i < frameCount; i++) {
-      // Normalize 16-bit integer to -1.0 to 1.0 float
+      // Normalize 16-bit signed integer to [-1.0, 1.0] float for AudioContext
       channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
     }
   }
