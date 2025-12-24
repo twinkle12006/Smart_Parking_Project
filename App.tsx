@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Car, ShieldCheck, BarChart3, Navigation, Upload, 
   Settings, Zap, Info, Eye, LogIn
@@ -30,6 +30,22 @@ export default function App() {
   });
   const [instruction, setInstruction] = useState("Control car with Arrow Keys.");
   const [keysPressed, setKeysPressed] = useState<Set<string>>(new Set());
+  const [sparkleActive, setSparkleActive] = useState(false);
+  
+  const lastVoiceRef = useRef<string>("");
+  const voiceDebounceRef = useRef<number>(0);
+
+  // Voice Instruction Utility
+  const speakInstruction = async (text: string) => {
+    if (text === lastVoiceRef.current) return;
+    const now = Date.now();
+    if (now - voiceDebounceRef.current < 3000) return; // Wait 3s between voice commands
+
+    lastVoiceRef.current = text;
+    voiceDebounceRef.current = now;
+    const audio = await generateSpeech(text);
+    if (audio) playAudioBuffer(audio);
+  };
 
   // Input Handling
   useEffect(() => {
@@ -58,31 +74,75 @@ export default function App() {
     return () => clearInterval(loop);
   }, [keysPressed]);
 
+  // Real-time Navigation Logic
+  useEffect(() => {
+    if (!userCar.targetSpotId || userCar.state === 'parked') return;
+
+    const target = spots.find(s => s.id === userCar.targetSpotId);
+    if (!target) return;
+
+    const dx = target.x - userCar.location.x;
+    const dy = target.y - userCar.location.y;
+    const distance = Math.hypot(dx, dy);
+
+    // 1. ARRIVAL CHECK
+    if (distance < 4) {
+      setUserCar(prev => ({ ...prev, state: 'parked' }));
+      setInstruction("You have arrived! Welcome.");
+      speakInstruction("You have arrived at your parking spot. Have a wonderful day.");
+      setSparkleActive(true);
+      setTimeout(() => setSparkleActive(false), 3000);
+      return;
+    }
+
+    // 2. DIRECTIONAL LOGIC
+    const angleToTarget = (Math.atan2(dy, dx) * 180 / Math.PI);
+    let angleDiff = (angleToTarget - userCar.rotation + 540) % 360 - 180;
+
+    let cmd = "Keep going straight.";
+    if (Math.abs(angleDiff) > 130) {
+      cmd = "Reverse back carefully.";
+    } else if (angleDiff > 25) {
+      cmd = "Turn right.";
+    } else if (angleDiff < -25) {
+      cmd = "Turn left.";
+    } else {
+      cmd = "Drive straight ahead.";
+    }
+
+    setInstruction(cmd);
+    
+    // Only speak every few meters to avoid annoyance
+    if (distance > 10) {
+      speakInstruction(cmd);
+    }
+
+  }, [userCar.location, userCar.rotation, userCar.targetSpotId, spots]);
+
   const onAnalysisComplete = useCallback((occupiedIds: string[]) => {
     setSpots(prev => prev.map(s => ({
       ...s, 
       status: occupiedIds.includes(s.id) ? SpotStatus.OCCUPIED : SpotStatus.AVAILABLE
     })));
-    setInstruction(`AI scan complete. Found ${spots.length - occupiedIds.length} open spots.`);
+    setInstruction(`Feed analyzed. Found ${spots.length - occupiedIds.length} vacant positions.`);
   }, [spots.length]);
 
   const findSpot = async (type?: SpotType) => {
     const available = spots.filter(s => s.status === SpotStatus.AVAILABLE && (!type || s.type === type));
     if (available.length === 0) {
-      setInstruction("No available spots found for your criteria.");
+      setInstruction("Apologies, no vacant spots found for this request.");
+      speakInstruction("No available spots found for your criteria.");
       return;
     }
     const best = available[0];
     setUserCar(v => ({...v, targetSpotId: best.id, state: 'driving'}));
-    const msg = `Navigating to ${best.type} spot ${best.id}.`;
+    const msg = `Navigating to ${best.type} spot ${best.id}. Turn toward the blue path.`;
     setInstruction(msg);
-    const audio = await generateSpeech(msg);
-    if (audio) playAudioBuffer(audio);
+    speakInstruction(`Setting navigation to ${best.type} spot ${best.id}. Follow my directions.`);
   };
 
   return (
     <div className="min-h-screen bg-[#f8fafc] text-slate-900 flex flex-col">
-      {/* Header */}
       <header className="h-20 bg-white border-b border-slate-200 px-8 flex items-center justify-between shadow-sm sticky top-0 z-50">
         <div className="flex items-center gap-4">
           <div className="bg-blue-600 p-2.5 rounded-xl shadow-lg shadow-blue-200">
@@ -90,7 +150,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-lg font-black tracking-tighter text-slate-800">SENTINELS <span className="text-blue-600">PARK</span></h1>
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">AI Vision SPMS v2.5</p>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Precision Vision AI</p>
           </div>
         </div>
 
@@ -115,24 +175,23 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 max-w-[1600px] mx-auto w-full p-8 flex flex-col lg:flex-row gap-8">
-        {/* Left Column: Map & Guidance */}
         <div className="flex-[2] flex flex-col gap-8">
-          <div className="bg-white rounded-[32px] p-8 shadow-2xl shadow-slate-200/40 border border-slate-100 flex items-center justify-between">
+          <div className="bg-white rounded-[32px] p-8 shadow-2xl shadow-slate-200/40 border border-slate-100 flex items-center justify-between transition-all">
             <div className="flex items-center gap-6">
-              <div className="w-16 h-16 bg-blue-50 rounded-3xl flex items-center justify-center border border-blue-100">
-                <Navigation className="text-blue-600 w-8 h-8 animate-pulse" />
+              <div className="w-16 h-16 bg-blue-50 rounded-3xl flex items-center justify-center border border-blue-100 relative">
+                <Navigation className="text-blue-600 w-8 h-8 animate-bounce" />
+                {sparkleActive && <div className="absolute inset-0 bg-yellow-400/20 animate-ping rounded-3xl"></div>}
               </div>
               <div>
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">AI Navigation Assistant</p>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Live AI Navigation</p>
                 <h2 className="text-2xl font-black text-slate-800">{instruction}</h2>
               </div>
             </div>
             <div className="hidden md:flex items-center gap-3">
               <div className="text-right">
-                <p className="text-[10px] font-bold text-slate-400 uppercase">Available Spots</p>
-                <p className="text-xl font-black text-emerald-500">{spots.filter(s => s.status === SpotStatus.AVAILABLE).length}</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase">Current Capacity</p>
+                <p className="text-xl font-black text-emerald-500">{spots.filter(s => s.status === SpotStatus.AVAILABLE).length} FREE</p>
               </div>
               <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center border border-emerald-100">
                 <Eye className="text-emerald-500 w-6 h-6" />
@@ -147,17 +206,17 @@ export default function App() {
               vehicles={[userCar]} 
               assignedSpotId={userCar.targetSpotId}
               onImageAnalysisComplete={onAnalysisComplete}
+              showSparkles={sparkleActive}
             />
           </div>
         </div>
 
-        {/* Right Column: Controls & Analytics */}
         <aside className="w-full lg:w-[420px] flex flex-col gap-8">
           {view === 'driver' ? (
             <div className="bg-white rounded-[40px] p-10 shadow-2xl shadow-slate-200/40 border border-slate-100 flex flex-col gap-10">
               <div>
-                <h3 className="text-4xl font-black text-slate-900 tracking-tighter mb-2">Smart Parking</h3>
-                <p className="text-slate-500 text-sm leading-relaxed">Gemini AI will now analyze the lot to find the safest and nearest spot for your vehicle.</p>
+                <h3 className="text-4xl font-black text-slate-900 tracking-tighter mb-2">Driver Control</h3>
+                <p className="text-slate-500 text-sm leading-relaxed">Experience hands-free parking. Our AI will guide you with voice commands from entry to engine off.</p>
               </div>
 
               <div className="grid grid-cols-1 gap-4">
@@ -166,8 +225,8 @@ export default function App() {
                     <Car className="text-white w-8 h-8" />
                   </div>
                   <div className="text-left">
-                    <p className="text-white font-black text-sm uppercase tracking-widest">Closest Spot</p>
-                    <p className="text-blue-100 text-xs mt-1">Instant GPS Routing</p>
+                    <p className="text-white font-black text-sm uppercase tracking-widest">Find Nearest</p>
+                    <p className="text-blue-100 text-xs mt-1">Smart Route Generation</p>
                   </div>
                 </button>
 
@@ -185,14 +244,14 @@ export default function App() {
 
               <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100">
                 <div className="flex items-center gap-2 mb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                  <Settings className="w-3.5 h-3.5" /> Virtual Controls
+                  <Settings className="w-3.5 h-3.5" /> Simulator Pedals
                 </div>
                 <div className="flex flex-col items-center gap-2 scale-90">
-                  <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">W</kbd>
+                  <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">↑</kbd>
                   <div className="flex gap-2">
-                    <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">A</kbd>
-                    <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">S</kbd>
-                    <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">D</kbd>
+                    <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">←</kbd>
+                    <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">↓</kbd>
+                    <kbd className="w-12 h-12 bg-white border-2 border-slate-200 rounded-xl flex items-center justify-center font-black text-slate-400 shadow-md">→</kbd>
                   </div>
                 </div>
               </div>
@@ -201,13 +260,12 @@ export default function App() {
             <div className="bg-white rounded-[40px] p-10 shadow-2xl shadow-slate-200/40 border border-slate-100 flex flex-col gap-8">
               <div>
                 <h3 className="text-2xl font-black text-slate-900 flex items-center gap-3">
-                  <BarChart3 className="text-blue-600 w-6 h-6" /> Site Management
+                  <BarChart3 className="text-blue-600 w-6 h-6" /> Management
                 </h3>
-                <p className="text-slate-500 text-xs mt-2 uppercase tracking-widest font-bold">Calibration & Feed</p>
+                <p className="text-slate-500 text-xs mt-2 uppercase tracking-widest font-bold">Live AI Site Control</p>
               </div>
 
               <div className="p-8 bg-slate-900 rounded-[32px] border border-slate-800 shadow-2xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 blur-[60px] rounded-full"></div>
                 <label className="relative group block border-2 border-dashed border-slate-700 rounded-2xl p-10 text-center cursor-pointer hover:border-blue-500 hover:bg-slate-800 transition-all">
                   <input type="file" className="hidden" onChange={(e) => {
                     const file = e.target.files?.[0];
@@ -217,26 +275,20 @@ export default function App() {
                     <Upload className="w-8 h-8 text-slate-500 group-hover:text-white" />
                   </div>
                   <p className="text-white font-black text-xs uppercase tracking-widest">Update AI Feed</p>
-                  <p className="text-slate-500 text-[9px] mt-2 leading-relaxed">Upload a clear JPG/PNG of the lot for Gemini Vision Analysis.</p>
                 </label>
               </div>
 
               <div className="space-y-4">
-                <div className="group p-5 bg-slate-50 rounded-2xl border border-slate-200 flex justify-between items-center hover:bg-white hover:shadow-lg transition-all">
+                <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 flex justify-between items-center">
                   <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center text-blue-600">
-                      <Car className="w-5 h-5" />
-                    </div>
+                    <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center text-blue-600 font-black">#</div>
                     <span className="text-xs font-black text-slate-600 uppercase tracking-widest">Total Spots</span>
                   </div>
                   <span className="text-lg font-black text-slate-900">{spots.length}</span>
                 </div>
-
-                <div className="group p-5 bg-slate-50 rounded-2xl border border-slate-200 flex justify-between items-center hover:bg-white hover:shadow-lg transition-all">
+                <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 flex justify-between items-center">
                   <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center text-emerald-600">
-                      <Zap className="w-5 h-5" />
-                    </div>
+                    <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center text-emerald-600">%</div>
                     <span className="text-xs font-black text-slate-600 uppercase tracking-widest">Occupancy</span>
                   </div>
                   <span className="text-lg font-black text-emerald-600">

@@ -9,20 +9,40 @@ interface ParkingMapProps {
   vehicles: Vehicle[];
   assignedSpotId: string | null;
   onImageAnalysisComplete: (spotIds: string[]) => void;
+  showSparkles?: boolean;
 }
 
 const THEME = {
   asphalt: '#0f172a',
-  available: '#10b981', // Emerald Green
-  occupied: '#ef4444', // Red
-  nav: '#3b82f6',      // Blue
-  handicap: '#3b82f6'  // Standard blue for the icon itself
+  available: '#10b981', 
+  occupied: '#ef4444', 
+  nav: '#3b82f6',      
+  handicap: '#3b82f6',
+  sparkle: ['#FFD700', '#FFFACD', '#FF69B4', '#00BFFF', '#ADFF2F']
 };
 
-const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assignedSpotId, onImageAnalysisComplete }) => {
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  color: string;
+  size: number;
+}
+
+const ParkingMap: React.FC<ParkingMapProps> = ({ 
+  mediaSrc, 
+  spots, 
+  vehicles, 
+  assignedSpotId, 
+  onImageAnalysisComplete,
+  showSparkles = false
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const pulseRef = useRef(0);
+  const particlesRef = useRef<Particle[]>([]);
 
   // Trigger Gemini AI Vision Analysis when source changes
   useEffect(() => {
@@ -31,7 +51,6 @@ const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assi
     const runAiAnalysis = async () => {
       setIsProcessing(true);
       try {
-        // Convert image to base64 for Gemini
         const img = new Image();
         img.crossOrigin = "anonymous";
         img.src = mediaSrc;
@@ -58,6 +77,25 @@ const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assi
     runAiAnalysis();
   }, [mediaSrc]);
 
+  // Particle creation for sparkles
+  useEffect(() => {
+    if (showSparkles) {
+      const newParticles: Particle[] = [];
+      for (let i = 0; i < 150; i++) {
+        newParticles.push({
+          x: 400 + (Math.random() - 0.5) * 50,
+          y: 300 + (Math.random() - 0.5) * 50,
+          vx: (Math.random() - 0.5) * 15,
+          vy: (Math.random() - 0.5) * 15 - 5,
+          life: 1.0,
+          color: THEME.sparkle[Math.floor(Math.random() * THEME.sparkle.length)],
+          size: Math.random() * 6 + 2
+        });
+      }
+      particlesRef.current = [...particlesRef.current, ...newParticles];
+    }
+  }, [showSparkles]);
+
   // Render Loop
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -75,7 +113,6 @@ const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assi
         const img = new Image();
         img.src = mediaSrc;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        // Dim the background slightly for better UI contrast
         ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       } else {
@@ -93,7 +130,6 @@ const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assi
         if (spot.status === SpotStatus.OCCUPIED) statusColor = THEME.occupied;
         if (spot.id === assignedSpotId) statusColor = THEME.nav;
 
-        // Spot Outline
         ctx.setLineDash([]);
         ctx.strokeStyle = statusColor;
         ctx.lineWidth = spot.id === assignedSpotId ? 5 : 3;
@@ -104,15 +140,13 @@ const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assi
         ctx.stroke();
         ctx.fill();
 
-        // ACCESSIBILITY SYMBOL RENDERING
         if (spot.type === SpotType.HANDICAP && spot.status === SpotStatus.AVAILABLE) {
-          ctx.fillStyle = statusColor; // Draw icon in the status color (Green if available)
+          ctx.fillStyle = statusColor; 
           ctx.font = '24px Arial';
           ctx.textAlign = 'center';
           ctx.fillText('♿', x, y + 8);
         }
 
-        // Spot ID Badge
         ctx.fillStyle = 'rgba(0,0,0,0.8)';
         ctx.beginPath();
         ctx.roundRect(x - 14, y - 40, 28, 16, 4);
@@ -131,22 +165,52 @@ const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assi
         ctx.translate(vx, vy);
         ctx.rotate((v.rotation * Math.PI) / 180);
         
-        // Shadow
         ctx.shadowColor = 'rgba(0,0,0,0.5)';
         ctx.shadowBlur = 10;
         
-        // Car Body
         ctx.fillStyle = v.color;
         ctx.beginPath();
         ctx.roundRect(-22, -12, 44, 24, 6);
         ctx.fill();
         
-        // Windshield
         ctx.fillStyle = 'rgba(255,255,255,0.3)';
         ctx.fillRect(6, -9, 10, 18);
         
         ctx.restore();
+
+        // Target Indicator line if navigating
+        if (assignedSpotId) {
+          const target = spots.find(s => s.id === assignedSpotId);
+          if (target) {
+            const tx = (target.x / 100) * canvas.width;
+            const ty = (target.y / 100) * canvas.height;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(vx, vy);
+            ctx.lineTo(tx, ty);
+            ctx.stroke();
+          }
+        }
       });
+
+      // Render Particles (Sparkles)
+      particlesRef.current.forEach((p, i) => {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.2; // Gravity
+        p.life -= 0.01;
+        p.size *= 0.98;
+      });
+      particlesRef.current = particlesRef.current.filter(p => p.life > 0);
+      ctx.globalAlpha = 1.0;
 
       frame = requestAnimationFrame(render);
     };
@@ -179,7 +243,6 @@ const ParkingMap: React.FC<ParkingMapProps> = ({ mediaSrc, spots, vehicles, assi
         </div>
       )}
 
-      {/* Accuracy Badge */}
       <div className="absolute bottom-4 right-4 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-full flex items-center gap-2 backdrop-blur-md">
         <CheckCircle2 className="w-3 h-3 text-emerald-500" />
         <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-tighter">AI Verification: 99.2%</span>
