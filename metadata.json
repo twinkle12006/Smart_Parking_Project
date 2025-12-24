@@ -1,0 +1,7 @@
+{
+  "name": "Sentinels Park",
+  "description": "A comprehensive Smart Parking Management System featuring video-based occupancy detection simulation, hands-free Gemini-powered voice navigation, and administrative analytics.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
