@@ -17,8 +17,8 @@ export interface ParkingSpot {
   id: string;
   type: SpotType;
   status: SpotStatus;
-  x: number; // Percentage 0-100
-  y: number; // Percentage 0-100
+  x: number; 
+  y: number; 
   aisle: string;
 }
 
