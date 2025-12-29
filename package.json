@@ -1,24 +1,25 @@
 {
-  "name": "sentinels-park",
+  "name": "smart_parking_project",
+  "version": "1.0.0",
   "private": true,
-  "version": "0.0.0",
+  "homepage": "https://twinkle12006.github.io/Smart_Parking_Project/",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "serve": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "react-dom": "^19.2.1",
-    "react": "^19.2.1",
-    "@google/genai": "^1.32.0",
-    "lucide-react": "^0.557.0",
-    "recharts": "^3.5.1"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^7.11.0",
+    "lucide-react": "^0.557.0"
   },
   "devDependencies": {
-    "@types/node": "^22.14.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "@vitejs/plugin-react": "^4.0.0",
+    "gh-pages": "^5.0.0",
+    "vite": "^5.4.21"
   }
 }
